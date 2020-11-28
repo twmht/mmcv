@@ -4,17 +4,28 @@ from collections import defaultdict
 from itertools import chain
 
 from torch.nn.utils import clip_grad
+import torch.nn as nn
+import torch
 
 from ..dist_utils import allreduce_grads
 from ..fp16_utils import LossScaler, wrap_fp16_model
 from .hook import HOOKS, Hook
 
+# additional subgradient descent on the sparsity-induced penalty term
+def updateBN(model, layer):
+    for m in model.modules():
+        if isinstance(m, layer):
+            if m.weight.requires_grad:
+                m.weight.grad.data.add_(1e-5 * torch.sign(m.weight.data))  # L1
 
 @HOOKS.register_module()
 class OptimizerHook(Hook):
 
-    def __init__(self, grad_clip=None):
+    def __init__(self, grad_clip=None, slim=None):
         self.grad_clip = grad_clip
+        self.slim = slim
+        assert(self.slim is None or isinstance(self.slim, dict))
+        assert(eval(self.slim['layer']))
 
     def clip_grads(self, params):
         params = list(
@@ -31,6 +42,8 @@ class OptimizerHook(Hook):
                 # Add grad norm to the logger
                 runner.log_buffer.update({'grad_norm': float(grad_norm)},
                                          runner.outputs['num_samples'])
+        if self.slim:
+            updateBN(runner.model, eval(self.slim['layer']))
         runner.optimizer.step()
 
 
