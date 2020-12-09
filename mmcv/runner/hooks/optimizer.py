@@ -25,7 +25,8 @@ class OptimizerHook(Hook):
         self.grad_clip = grad_clip
         self.slim = slim
         assert(self.slim is None or isinstance(self.slim, dict))
-        assert(eval(self.slim['layer']))
+        if self.slim:
+            assert(eval(self.slim['layer']))
 
     def clip_grads(self, params):
         params = list(

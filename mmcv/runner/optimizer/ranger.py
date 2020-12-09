@@ -113,6 +113,8 @@ class Ranger(Optimizer):
             for p in group['params']:
                 if p.grad is None:
                     continue
+
+
                 grad = p.grad.data.float()
 
                 if grad.is_sparse:
@@ -120,6 +122,9 @@ class Ranger(Optimizer):
                         'Ranger optimizer does not support sparse gradients')
 
                 p_data_fp32 = p.data.float()
+
+                if group['weight_decay'] != 0:
+                    p_data_fp32.mul_(1 - group['lr'] * group['weight_decay'])
 
                 state = self.state[p]  # get state dict for this param
 
@@ -187,8 +192,8 @@ class Ranger(Optimizer):
                 else:
                     G_grad = exp_avg
 
-                if group['weight_decay'] != 0:
-                    G_grad.add_(p_data_fp32, alpha=group['weight_decay'])
+                #  if group['weight_decay'] != 0:
+                    #  G_grad.add_(p_data_fp32, alpha=group['weight_decay'])
                 # GC operation
                 if self.gc_loc == False:
                     G_grad = centralized_gradient(G_grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)

@@ -1,7 +1,8 @@
 # Copyright (c) Open-MMLab. All rights reserved.
-from math import cos, pi
 
 from .hook import HOOKS, Hook
+from math import cos, pi
+import math
 
 
 class LrUpdaterHook(Hook):
@@ -25,7 +26,10 @@ class LrUpdaterHook(Hook):
                  warmup=None,
                  warmup_iters=0,
                  warmup_ratio=0.1,
-                 warmup_by_epoch=False):
+                 warmup_by_epoch=False,
+                 norm_wd=False,
+                 warmup_wd=5e-4
+                 ):
         # validate the "warmup" argument
         if warmup is not None:
             if warmup not in ['constant', 'linear', 'exp']:
@@ -53,6 +57,9 @@ class LrUpdaterHook(Hook):
         self.base_lr = []  # initial lr for all param groups
         self.regular_lr = []  # expected lr if no warming up is performed
 
+        self.norm_wd = norm_wd
+        self.warmup_wd = warmup_wd
+
     def _set_lr(self, runner, lr_groups):
         if isinstance(runner.optimizer, dict):
             for k, optim in runner.optimizer.items():
@@ -63,8 +70,21 @@ class LrUpdaterHook(Hook):
                                        lr_groups):
                 param_group['lr'] = lr
 
+    def _set_wd(self, runner, wd_groups):
+        if isinstance(runner.optimizer, dict):
+            for k, optim in runner.optimizer.items():
+                for param_group, wd in zip(optim.param_groups, wd_groups[k]):
+                    param_group['weight_decay'] = wd
+        else:
+            for param_group, wd in zip(runner.optimizer.param_groups,
+                                       wd_groups):
+                param_group['wd'] = wd
+
     def get_lr(self, runner, base_lr):
         raise NotImplementedError
+
+    def get_wd(self, runner, base_wd):
+        raise base_wd
 
     def get_regular_lr(self, runner):
         if isinstance(runner.optimizer, dict):
@@ -80,6 +100,20 @@ class LrUpdaterHook(Hook):
         else:
             return [self.get_lr(runner, _base_lr) for _base_lr in self.base_lr]
 
+    def get_regular_wd(self, runner):
+        if isinstance(runner.optimizer, dict):
+            wd_groups = {}
+            for k in runner.optimizer.keys():
+                _wd_group = [
+                    self.get_wd(runner, _base_wd)
+                    for _base_wd in self.base_wd[k]
+                ]
+                wd_groups.update({k: _wd_group})
+
+            return wd_groups
+        else:
+            return [self.get_wd(runner, _base_wd) for _base_wd in self.base_wd]
+
     def get_warmup_lr(self, cur_iters):
         if self.warmup == 'constant':
             warmup_lr = [_lr * self.warmup_ratio for _lr in self.regular_lr]
@@ -91,23 +125,37 @@ class LrUpdaterHook(Hook):
             warmup_lr = [_lr * k for _lr in self.regular_lr]
         return warmup_lr
 
+    def get_warmup_wd(self, cur_iters):
+        warmup_wd = [_wd for _wd in self.regular_wd]
+        return warmup_wd
+
     def before_run(self, runner):
         # NOTE: when resuming from a checkpoint, if 'initial_lr' is not saved,
         # it will be set according to the optimizer params
         if isinstance(runner.optimizer, dict):
             self.base_lr = {}
+            self.base_wd = {}
             for k, optim in runner.optimizer.items():
                 for group in optim.param_groups:
                     group.setdefault('initial_lr', group['lr'])
+                    group.setdefault('initial_wd', group['weight_decay'])
                 _base_lr = [
                     group['initial_lr'] for group in optim.param_groups
                 ]
+                _base_wd = [
+                    group['initial_wd'] for group in optim.param_groups
+                ]
                 self.base_lr.update({k: _base_lr})
+                self.base_wd.update({k: _base_wd})
         else:
             for group in runner.optimizer.param_groups:
                 group.setdefault('initial_lr', group['lr'])
+                group.setdefault('initial_wd', group['weight_decay'])
             self.base_lr = [
                 group['initial_lr'] for group in runner.optimizer.param_groups
+            ]
+            self.base_wd = [
+                group['initial_wd'] for group in runner.optimizer.param_groups
             ]
 
     def before_train_epoch(self, runner):
@@ -119,25 +167,34 @@ class LrUpdaterHook(Hook):
             return
 
         self.regular_lr = self.get_regular_lr(runner)
+        self.regular_wd = self.get_regular_wd(runner)
         self._set_lr(runner, self.regular_lr)
+        self._set_wd(runner, self.regular_wd)
 
     def before_train_iter(self, runner):
         cur_iter = runner.iter
         if not self.by_epoch:
             self.regular_lr = self.get_regular_lr(runner)
+            self.regular_wd = self.get_regular_wd(runner)
             if self.warmup is None or cur_iter >= self.warmup_iters:
                 self._set_lr(runner, self.regular_lr)
+                self._set_wd(runner, self.regular_wd)
             else:
                 warmup_lr = self.get_warmup_lr(cur_iter)
                 self._set_lr(runner, warmup_lr)
+                warmup_wd = self.get_warmup_wd(cur_iter)
+                self._set_wd(runner, warmup_wd)
         elif self.by_epoch:
             if self.warmup is None or cur_iter > self.warmup_iters:
                 return
             elif cur_iter == self.warmup_iters:
                 self._set_lr(runner, self.regular_lr)
+                self._set_wd(runner, self.regular_wd)
             else:
                 warmup_lr = self.get_warmup_lr(cur_iter)
                 self._set_lr(runner, warmup_lr)
+                warmup_wd = self.get_warmup_wd(cur_iter)
+                self._set_wd(runner, warmup_wd)
 
 
 @HOOKS.register_module()
@@ -232,6 +289,19 @@ class CosineAnnealingLrUpdaterHook(LrUpdaterHook):
         self.min_lr = min_lr
         self.min_lr_ratio = min_lr_ratio
         super(CosineAnnealingLrUpdaterHook, self).__init__(**kwargs)
+
+    def get_wd(self, runner, base_wd):
+        if self.by_epoch:
+            progress = runner.epoch
+            max_progress = runner.max_epochs
+        else:
+            progress = runner.iter
+            max_progress = runner.max_iters
+
+        if self.norm_wd:
+            return annealing_cos(base_wd / math.pow(max_progress, 0.5), 0, progress / max_progress)
+        else:
+            return base_wd
 
     def get_lr(self, runner, base_lr):
         if self.by_epoch:

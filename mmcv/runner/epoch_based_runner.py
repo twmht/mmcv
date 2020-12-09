@@ -81,6 +81,7 @@ class EpochBasedRunner(BaseRunner):
                 iteratively.
         """
         assert isinstance(data_loaders, list)
+        self.train_dataloader = data_loaders[0]
         assert mmcv.is_list_of(workflow, tuple)
         assert len(data_loaders) == len(workflow)
         if max_epochs is not None:
