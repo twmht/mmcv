@@ -54,6 +54,7 @@ class BaseRunner(metaclass=ABCMeta):
                  work_dir=None,
                  logger=None,
                  meta=None,
+                 is_fp16=False,
                  max_iters=None,
                  max_epochs=None):
         if batch_processor is not None:
@@ -102,6 +103,7 @@ class BaseRunner(metaclass=ABCMeta):
         self.optimizer = optimizer
         self.logger = logger
         self.meta = meta
+        self.is_fp16 = is_fp16
 
         # create work_dir
         if mmcv.is_str(work_dir):

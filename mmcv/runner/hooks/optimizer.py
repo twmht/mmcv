@@ -21,12 +21,17 @@ def updateBN(model, layer):
 @HOOKS.register_module()
 class OptimizerHook(Hook):
 
-    def __init__(self, grad_clip=None, slim=None):
+    def __init__(self, grad_clip=None, slim=None, is_fp16=False):
         self.grad_clip = grad_clip
         self.slim = slim
         assert(self.slim is None or isinstance(self.slim, dict))
         if self.slim:
             assert(eval(self.slim['layer']))
+
+        #  if is_fp16:
+            #  self.scaler = torch.cuda.amp.GradScaler()
+        #  else:
+            #  self.scaler = None
 
     def clip_grads(self, params):
         params = list(
@@ -36,7 +41,13 @@ class OptimizerHook(Hook):
 
     def after_train_iter(self, runner):
         runner.optimizer.zero_grad()
-        runner.outputs['loss'].backward()
+        loss = runner.outputs['loss']
+        #  if self.scaler:
+            #  assert (self.grad_clip is None)
+            #  self.scaler.scale(loss).backward()
+        #  else:
+            #  loss.backward()
+        loss.backward()
         if self.grad_clip is not None:
             grad_norm = self.clip_grads(runner.model.parameters())
             if grad_norm is not None:
@@ -45,6 +56,10 @@ class OptimizerHook(Hook):
                                          runner.outputs['num_samples'])
         if self.slim:
             updateBN(runner.model, eval(self.slim['layer']))
+        #  if self.scaler:
+            #  self.scaler.step(runner.optimizer)
+            #  self.scaler.update()
+        #  else:
         runner.optimizer.step()
 
 
